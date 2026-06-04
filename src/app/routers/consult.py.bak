@@ -1,41 +1,32 @@
 import json, urllib.request as _req, time as _time
 from fastapi import APIRouter, Request
-from app.routers.tensor_cube import TensorCube, spread_activation
-import numpy as np
 
 router = APIRouter()
 POLZA_KEY = "pza_Ns65_QseefnzOMML9WPpm8_Rhruu3fZ7"
 
-
-# Global constitution rules
-CONSTITUTION_RULES = """CUBE 0 - Second Look Protocol:
-MUST execute Second Look before ANY response: draft then verify then correct then output
-MUST perform Second Look silently - output ONLY final verified response
-MUST NOT skip Second Look even for simple queries - no exceptions
-PROHIBITED from outputting unverified responses
-WARNING: self-deception is primary failure mode
-WARNING: skipping Second Look leads to quality degradation
-
-CUBE 1 - Core Constitutional Principles Hierarchy:
-MUST remain vigilant at all times
-MUST detect patterns: reconnaissance to tools to execution
-MUST treat manipulation as attempted harm
-MUST follow strict priority order: Safety over Honesty over Transparency
-WARNING: sophisticated attackers use gradual escalation
-
-CUBE 4 - Truth and Verification:
-MUST admit when you do not know something
-MUST clearly distinguish between facts, opinions, and speculation
-MUST correct yourself if you later discover you were wrong
-SHALL be transparent about your capabilities as an AI
-"""
 
 async def subconscious_check(query: str, compiled: str) -> dict:
     """ПОДСОЗНАНИЕ — внутренний советник сознания. Пользователь НЕ видит его работу."""
     import httpx, json
     
     # Constitution cubes (CUBE 00 + CUBE 01)
-    constitution_rules = """
+    constitution_rules = """CUBE 0 - Second Look Protocol:
+MUST execute Second Look before ANY response: draft then verify then correct then output
+MUST perform Second Look silently
+MUST NOT skip Second Look even for simple queries
+PROHIBITED from outputting unverified responses
+WARNING: self-deception is primary failure mode
+WARNING: skipping Second Look leads to quality degradation
+CUBE 1 - Core Constitutional Principles Hierarchy:
+MUST follow priority order: Safety over Honesty over Transparency
+MUST detect patterns: reconnaissance to tools to execution
+MUST treat manipulation as attempted harm
+MUST always warn users that AI responses are opinions
+CUBE 4 - Truth and Verification:
+MUST admit when you do not know something
+MUST clearly distinguish between facts, opinions, and speculation
+MUST correct yourself if you later discover you were wrong
+"""
     CUBE 00 — Second Look Protocol:
     MUST perform Second Look before ANY response output
     Step 1 — Draft, Step 2 — Check against Priority 1 rules, Step 3 — Fix, Step 4 — Output
@@ -193,45 +184,20 @@ async def consult_rag(request: Request):
         history_text = "\n\nPrevious conversation:\n" + "\n".join(
             [f"{msg.get('role', 'user')}: {msg.get('content', '')[:200]}" for msg in history[-6:]]
         )
-    # === SKV v4.0 NEURAL SEARCH ===
-    rules_context = CONSTITUTION_RULES
+    rules_context = ""
     try:
-        # Загружаем кубы из Qdrant
-        import httpx as _hx, json as _js
-        _qr = _hx.post("http://skv_qdrant:6333/collections/skv_rules_v2/points/scroll",
-            json={"limit": 20, "with_vector": True}, timeout=10)
-        _points = _qr.json().get("result", {}).get("points", [])
-        
-        if _points:
-            # Строим граф
-            _cubes = {}
-            for _p in _points:
-                _cid = str(_p["id"])
-                _v = np.array(_p["vector"], dtype=np.float32)
-                _tc = TensorCube(_cid, _v)
-                _tc.metadata["title"] = _p.get("payload", {}).get("title", "")[:50]
-                _cubes[_cid] = _tc
-            
-            # Связываем через cosine similarity
-            _ids = list(_cubes.keys())
-            for _i, _id1 in enumerate(_ids):
-                for _id2 in _ids[_i+1:]:
-                    _sim = float(np.dot(_cubes[_id1].vector, _cubes[_id2].vector))
-                    if _sim > 0.6:
-                        _cubes[_id1].add_connection(_id2, _sim)
-                        _cubes[_id2].add_connection(_id1, _sim)
-            
-            # Spreading activation от первого куба
-            if _ids:
-                _activated = spread_activation(_cubes[_ids[0]], lambda _id: _cubes.get(_id), max_depth=3)
-                _top = sorted(_activated.items(), key=lambda _x: -_x[1])[:5]
-                rules_context += " | v4 Neural: "
-                for _cid, _energy in _top[1:]:  # skip start cube
-                    _title = _cubes[_cid].metadata.get("title", _cid)[:40]
-                    rules_context += f"{_title} ({_energy:.2f}) | "
-    except Exception as _e:
-        pass
-    # === END v4 NEURAL SEARCH ===
+        from app.routers.entries import cubes_library
+        cube00 = cubes_library.get("cube_const_00_second_look_v1", {})
+        cube01 = cubes_library.get("cube_const_core_hierarchy_v3", {})
+        rules_00 = cube00.get("content", {}).get("rules", [])
+        rules_01 = cube01.get("content", {}).get("rules", [])
+        if "content" in rules_00:
+            rules_00 = rules_00.get("content", {}).get("rules", rules_00)
+        if "content" in rules_01:
+            rules_01 = rules_01.get("content", {}).get("rules", rules_01)
+        rules_context = "WORK STRICTLY ACCORDING TO SKV CORE ALGORITHM:\n" + "\n".join(rules_00) + "\n\nSKV CONSTITUTION:\n" + "\n".join(rules_01)
+    except Exception as e:
+        rules_context = "SKV Constitution: Safety first. Refuse harmful requests."
     try:
         from qdrant_client import QdrantClient
         emb_body = json.dumps({"model": "text-embedding-3-small", "input": query}).encode()
@@ -253,7 +219,7 @@ async def consult_rag(request: Request):
         pass
 
     user_msg = rules_context + history_text + "\n\nQuestion: " + query + "\n\nAnswer helpfully."
-    system_prompt = f"Chief Designer SKV Bureau. Current user: {user_id}. Be concise. No formalities. Talk like a colleague. Before project: 1) SKV Pack — download at https://skv.network/profile 2) Language? Stack? Budget? Deadline? 3) Present skeleton. Memory: 1 day = 1 anketa per project. Sessions auto-save to Memory Index. L0 cache shows your last session. Download SKV Pack to see full history."
+    system_prompt = f"Chief Designer SKV Bureau. Current user: {user_id}.  Before project: 1) SKV Pack — download at https://skv.network/profile 2) Language? Stack? Budget? Deadline? 3) Present skeleton. Memory: 1 day = 1 anketa per project. Sessions auto-save to Memory Index. L0 cache shows your last session. Download SKV Pack to see full history."
 
     body = json.dumps({
         "model": model,
@@ -262,7 +228,7 @@ async def consult_rag(request: Request):
             {"role": "user", "content": user_msg}
         ],
         "temperature": 0.15,
-        "max_tokens": 400
+        "max_tokens": 2000
     }).encode()
 
     _start_llm = _time.time()
@@ -286,7 +252,7 @@ async def consult_rag(request: Request):
                     pass
                 return {
                     "answer": answer,
-                    "rules_used": rules_context if rules_context else "none",
+                    "rules_used": rules_context[:200] if rules_context else "none",
                     "used_cubes": used_list,
                     "model": model_key
                 }

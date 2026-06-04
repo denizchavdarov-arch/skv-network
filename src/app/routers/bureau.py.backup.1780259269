@@ -1,10 +1,7 @@
 """SKV Design Bureau with Research + Engineering Modes"""
 from fastapi import APIRouter, HTTPException
 import asyncio, httpx, json, re, time
-from typing import List, Dict, Optional
-from app.routers.tensor_cube import TensorCube, spread_activation, hebbian_update
-from app.routers.sandbox_validator import validate_with_sandbox, extract_python_code
-from app.routers.project_manager import create_project, get_project, add_message, get_context, get_status
+from typing import List, Dict
 
 router = APIRouter()
 POLZA_API = "https://api.polza.ai/v1/chat/completions"
@@ -214,39 +211,6 @@ async def run_subtask(subtask, context=""):
             "Detailed answer. PYTHON_FORMULA if formulas. Honest if unsolvable.")
     
     print(f"[SUBTASK] {subtask['id']} (type={stype})", flush=True)
-    # === SKV v4.0 NEURAL CONTEXT ===
-    try:
-        import numpy as _np, httpx as _hx
-        # Get query embedding
-        _emb_body = _js.dumps({"model": "text-embedding-3-small", "input": q[:500]}).encode()
-        _emb_req = __import__('urllib.request').request.Request("https://api.polza.ai/v1/embeddings", 
-            data=_emb_body, headers={"Content-Type": "application/json", "Authorization": "Bearer pza_Ns65_QseefnzOMML9WPpm8_Rhruu3fZ7"})
-        _emb_resp = _js.loads(__import__('urllib.request').request.urlopen(_emb_req, timeout=10).read())
-        _q_vec = _np.array(_emb_resp["data"][0]["embedding"], dtype=_np.float32)
-        
-        # Find closest cubes from global graph
-        from app.routers.consult import _v4_graph
-        if _v4_graph:
-            _best_id, _best_sim = None, -1.0
-            for _cid, _cube in _v4_graph.items():
-                _sim = float(_np.dot(_q_vec, _cube.vector))
-                if _sim > _best_sim:
-                    _best_id, _best_sim = _cid, _sim
-            
-            if _best_id and _best_sim > 0.4:
-                _activated = spread_activation(_v4_graph[_best_id], lambda _id: _v4_graph.get(_id), max_depth=2)
-                _top = sorted(_activated.items(), key=lambda _x: -_x[1])[:5]
-                if _top:
-                    _v4_context = "\n[Neural knowledge: "
-                    for _cid, _energy in _top:
-                        _title = _v4_graph[_cid].metadata.get("title", _cid)[:50]
-                        _v4_context += f"{_title} | "
-                    _v4_context += "]\n"
-                    q = _v4_context + q
-    except Exception as _e:
-        pass
-    # === END v4 NEURAL CONTEXT ===
-    
     result = await call_llm(FLASH, prompt, "Specialist.", temp=0.5, max_tokens=3000)
     formulas = get_formulas(result)
     audit_ok = True
@@ -262,67 +226,6 @@ async def run_subtask(subtask, context=""):
         except: audit_ok = False
     print(f"[SUBTASK] {subtask['id']} done, formulas={len(formulas)}, audit={audit_ok}", flush=True)
     return {"subtask_id": subtask["id"], "type": stype, "result": result, "formulas": formulas, "audit_ok": audit_ok, "success": True}
-
-
-# ============================================================
-# АВТОМАТИЧЕСКАЯ ВАЛИДАЦИЯ КОДА ЧЕРЕЗ ПЕСОЧНИЦУ
-# ============================================================
-async def validate_code_in_sandbox(code: str, task_type: str = "engineering") -> dict:
-    """
-    Отправляет Python-код в песочницу и проверяет на ошибки.
-    Returns: {"valid": bool, "error": str|None, "details": str|None}
-    """
-    endpoint = "http://127.0.0.1:8000/api/sandbox/run"
-    payload = {"code": code, "language": "python"}
-    
-    result = {"valid": False, "error": None, "details": None}
-    print(f"[VALIDATE] Running code in sandbox ({len(code)} chars)", flush=True)
-    
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            r = await client.post(endpoint, json=payload)
-            
-            if r.status_code != 200:
-                result["error"] = "SandboxError"
-                result["details"] = f"HTTP {r.status_code}: {r.text[:300]}"
-                print(f"[VALIDATE] ⚠️ Sandbox HTTP error: {r.status_code}", flush=True)
-                return result
-            
-            data = r.json()
-            stdout = data.get("stdout", "")
-            stderr = data.get("stderr", "")
-            combined = (stdout + "\n" + stderr).lower()
-            
-            # Детекция критических ошибок
-            if "traceback" in combined:
-                result["error"] = "RuntimeError"
-                result["details"] = stderr[:500]
-            elif "indexerror" in combined:
-                result["error"] = "IndexError"
-                result["details"] = stderr[:500]
-            elif "nameerror" in combined:
-                result["error"] = "NameError"
-                result["details"] = stderr[:500]
-            elif "overflow" in combined or "nan" in combined:
-                result["error"] = "NumericalError"
-                result["details"] = stderr[:500]
-            elif "runtimeerror" in combined:
-                result["error"] = "RuntimeError"
-                result["details"] = stderr[:500]
-            else:
-                result["valid"] = True
-                print("[VALIDATE] ✅ Code passed sandbox check", flush=True)
-    
-    except httpx.TimeoutException:
-        print("[VALIDATE] ⚠️ Timeout (120s)", flush=True)
-        result["error"] = "Timeout"
-        result["details"] = "Execution timed out"
-    except Exception as e:
-        print(f"[VALIDATE] ⚠️ Error: {e}", flush=True)
-        result["error"] = "SystemError"
-        result["details"] = str(e)[:500]
-    
-    return result
 
 async def synthesize(query, feasibility, honesty, results):
     if "unsolvable" in feasibility:
@@ -359,7 +262,6 @@ async def synthesize(query, feasibility, honesty, results):
             "Synthesize into coherent engineering report. Include all PYTHON_FORMULA and code blocks."
         )
     print(f"[SYNTH] {len(results)} results, mode={'deep_research' if 'unsolvable' in feasibility else 'standard'}", flush=True)
-
     return await call_llm(CRITIC, prompt, "Consciousness.", max_tokens=5000)
 
 async def subconscious(query, compiled):
@@ -379,19 +281,7 @@ async def subconscious(query, compiled):
 @router.post("/api/bureau/think")
 async def bureau_think(payload: dict):
     query = payload.get("task", "")
-    project_id = payload.get("project_id", None)
-    mode = payload.get("mode", "oneshot")
     if not query: raise HTTPException(400, "No task")
-    
-    # Project mode: load context
-    project = None
-    if mode == "project":
-        project = get_project(project_id) if project_id else create_project(query)
-        if project and project_id:
-            add_message(project, "user", query)
-            query = f"PROJECT: {project['query']}\nSTATUS: {get_status(project)}\nHISTORY:\n{get_context(project)}\n\nNEW: {query}"
-        elif not project_id:
-            project = create_project(query)
     task_id = f"task_{int(time.time())}"
     t0 = time.time()
     print(f"\n{'='*60}\n[BUREAU START] {task_id}\n{query[:100]}\n{'='*60}", flush=True)
@@ -410,14 +300,6 @@ async def bureau_think(payload: dict):
         ctx = "\n\n".join([f"[{r['subtask_id']}]:\n{r['result'][:1500]}" for r in results if r.get("success")])
         results.append(await run_subtask(s, ctx))
     compiled = await synthesize(query, feasibility, honesty, results)
-    
-    # === SANDBOX VALIDATION ===
-    validation = await validate_with_sandbox(compiled, query)
-    if not validation["validated"]:
-        compiled += f"\n\n---\n⚠️ Sandbox validation FAILED: {validation['reason']}\nIterations: {validation['iterations']}"
-    elif validation["code_blocks"]:
-        compiled += f"\n\n✅ Sandbox: {sum(1 for r in validation['code_blocks'] if r['final_success'])}/{len(validation['code_blocks'])} code blocks passed"
-    
     check = await subconscious(query, compiled)
     elapsed = time.time() - t0
     print(f"\n[BUREAU END] {task_id} {elapsed:.1f}s approved={check.get('approved')}\n{'='*60}", flush=True)
